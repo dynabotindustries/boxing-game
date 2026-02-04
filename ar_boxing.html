@@ -1,0 +1,460 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AR Boxing - Living Room Edition</title>
+    <style>
+        body { margin: 0; overflow: hidden; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background-color: #000; }
+        
+        /* Main 3D Container */
+        #game-container { position: absolute; top: 0; left: 0; width: 100%; height: 100%; z-index: 1; }
+        
+        /* UI Layer */
+        #ui-layer { position: absolute; top: 0; left: 0; width: 100%; height: 100%; z-index: 2; pointer-events: none; }
+        
+        /* Camera Preview (Top Left) */
+        #preview-container {
+            position: absolute;
+            top: 20px;
+            left: 20px;
+            width: 240px;
+            height: 180px;
+            background: #222;
+            border: 4px solid #fff;
+            border-radius: 12px;
+            overflow: hidden;
+            box-shadow: 0 8px 16px rgba(0,0,0,0.5);
+            z-index: 10;
+        }
+        
+        /* Mirror the video for natural feel */
+        #input_video { width: 100%; height: 100%; object-fit: cover; display: none; } 
+        #output_canvas { width: 100%; height: 100%; display: block; }
+        
+        /* Score Display */
+        #score-board {
+            position: absolute;
+            top: 20px;
+            right: 30px;
+            text-align: right;
+        }
+        #score-label { font-size: 18px; color: #888; font-weight: bold; text-transform: uppercase; }
+        #score-value { font-size: 64px; color: #ff4757; font-weight: 900; text-shadow: 2px 2px 0px #fff; margin-top: -10px; }
+        
+        /* Instructions */
+        #instructions {
+            position: absolute;
+            bottom: 30px;
+            width: 100%;
+            text-align: center;
+            font-size: 24px;
+            color: #333;
+            text-shadow: 0 1px 0 rgba(255,255,255,0.8);
+        }
+        
+        /* Loading Screen */
+        #loading {
+            position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+            background: #f1f2f6; display: flex; flex-direction: column;
+            justify-content: center; align-items: center; z-index: 100;
+        }
+        .spinner {
+            width: 50px; height: 50px; border: 5px solid #ccc; border-top-color: #ff4757;
+            border-radius: 50%; animation: spin 1s linear infinite; margin-bottom: 20px;
+        }
+        @keyframes spin { to { transform: rotate(360deg); } }
+    </style>
+    
+    <!-- Three.js -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <!-- MediaPipe -->
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/control_utils/control_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/pose/pose.js" crossorigin="anonymous"></script>
+</head>
+<body>
+
+    <div id="loading">
+        <div class="spinner"></div>
+        <h2>Loading AI Models...</h2>
+        <p>Please allow camera access when prompted.</p>
+    </div>
+
+    <div id="game-container"></div>
+
+    <div id="ui-layer">
+        <div id="preview-container">
+            <video id="input_video"></video>
+            <canvas id="output_canvas"></canvas>
+        </div>
+        
+        <div id="score-board">
+            <div id="score-label">Score</div>
+            <div id="score-value">0</div>
+        </div>
+        
+        <div id="instructions">
+            Stand sideways, facing Right, and <b>PUNCH</b> the bag!
+        </div>
+    </div>
+
+<script>
+    // --- Game State ---
+    let score = 0;
+    let lastHitTime = 0;
+    const HIT_COOLDOWN = 150; // ms
+    
+    // --- Three.js Setup ---
+    const container = document.getElementById('game-container');
+    const scene = new THREE.Scene();
+    scene.background = new THREE.Color(0xf1f2f6); // Light grey/white
+    scene.fog = new THREE.Fog(0xf1f2f6, 5, 15);
+
+    const camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.1, 100);
+    camera.position.set(3.5, 1.6, -0.5); // Side view
+    camera.lookAt(0, 1.2, -0.5);
+
+    const renderer = new THREE.WebGLRenderer({ antialias: true });
+    renderer.setSize(window.innerWidth, window.innerHeight);
+    renderer.shadowMap.enabled = true;
+    container.appendChild(renderer.domElement);
+
+    // --- Lighting ---
+    const hemiLight = new THREE.HemisphereLight(0xffffff, 0x444444, 0.8);
+    scene.add(hemiLight);
+
+    const dirLight = new THREE.DirectionalLight(0xffffff, 0.8);
+    dirLight.position.set(5, 10, 7);
+    dirLight.castShadow = true;
+    dirLight.shadow.mapSize.width = 1024;
+    dirLight.shadow.mapSize.height = 1024;
+    scene.add(dirLight);
+
+    // --- Environment: Living Room ---
+    // Floor
+    const floorGeo = new THREE.PlaneGeometry(20, 20);
+    const floorMat = new THREE.MeshStandardMaterial({ color: 0xd1ccc0, roughness: 0.8 });
+    const floor = new THREE.Mesh(floorGeo, floorMat);
+    floor.rotation.x = -Math.PI / 2;
+    floor.receiveShadow = true;
+    scene.add(floor);
+
+    // Walls
+    const wallMat = new THREE.MeshStandardMaterial({ color: 0xf7f1e3 }); // Cream
+    const backWall = new THREE.Mesh(new THREE.BoxGeometry(20, 10, 1), wallMat);
+    backWall.position.set(0, 5, -5);
+    backWall.receiveShadow = true;
+    scene.add(backWall);
+
+    const leftWall = new THREE.Mesh(new THREE.BoxGeometry(1, 10, 20), wallMat);
+    leftWall.position.set(-10, 5, 0);
+    scene.add(leftWall);
+
+    const rightWall = new THREE.Mesh(new THREE.BoxGeometry(1, 10, 20), wallMat);
+    rightWall.position.set(10, 5, 0);
+    scene.add(rightWall);
+
+    // Artifacts
+    // Shelf
+    const shelf = new THREE.Mesh(new THREE.BoxGeometry(4, 0.2, 1), new THREE.MeshStandardMaterial({ color: 0x8B4513 }));
+    shelf.position.set(-4, 2, -4.4);
+    shelf.castShadow = true;
+    scene.add(shelf);
+
+    // Vase on shelf
+    const vase = new THREE.Mesh(new THREE.CylinderGeometry(0.2, 0.3, 0.8, 16), new THREE.MeshStandardMaterial({ color: 0x3498db }));
+    vase.position.set(-3.5, 2.5, -4.4);
+    vase.castShadow = true;
+    scene.add(vase);
+
+    // Painting
+    const paintingFrame = new THREE.Mesh(new THREE.BoxGeometry(2, 3, 0.1), new THREE.MeshStandardMaterial({ color: 0x2c3e50 }));
+    paintingFrame.position.set(4, 3, -4.45);
+    scene.add(paintingFrame);
+    const paintingCanvas = new THREE.Mesh(new THREE.PlaneGeometry(1.8, 2.8), new THREE.MeshBasicMaterial({ color: 0xe17055 })); // Abstract art
+    paintingCanvas.position.set(4, 3, -4.39);
+    scene.add(paintingCanvas);
+
+    // --- Punching Bag ---
+    const bagGroup = new THREE.Group();
+    scene.add(bagGroup);
+
+    // Pivot point (Ceiling attachment)
+    const pivotY = 4;
+    const pivotZ = -0.9;
+    bagGroup.position.set(0, pivotY, pivotZ);
+
+    // Chain
+    const chainLen = 2.0;
+    const chainGeo = new THREE.CylinderGeometry(0.02, 0.02, chainLen);
+    const chainMat = new THREE.MeshStandardMaterial({ color: 0x2f3542 });
+    const chain = new THREE.Mesh(chainGeo, chainMat);
+    chain.position.y = -chainLen / 2;
+    bagGroup.add(chain);
+
+    // Bag Body
+    const bagHeight = 1.2;
+    const bagRadius = 0.35;
+    const bagGeo = new THREE.CylinderGeometry(bagRadius, bagRadius, bagHeight, 32);
+    const bagMat = new THREE.MeshStandardMaterial({ color: 0xc0392b, roughness: 0.4 });
+    const bag = new THREE.Mesh(bagGeo, bagMat);
+    bag.position.y = -chainLen - (bagHeight / 2);
+    bag.castShadow = true;
+    bagGroup.add(bag);
+
+    // Bag Physics State
+    let bagAngleX = 0; // Swing forward/back
+    let bagAngleZ = 0; // Swing left/right
+    let bagVelX = 0;
+    let bagVelZ = 0;
+
+    // --- Player Character (Robot/Mannequin) ---
+    const playerGroup = new THREE.Group();
+    scene.add(playerGroup);
+
+    const jointMat = new THREE.MeshStandardMaterial({ color: 0x2f3640 });
+    const limbMat = new THREE.MeshStandardMaterial({ color: 0x7f8fa6 });
+    const gloveMat = new THREE.MeshStandardMaterial({ color: 0xe1b12c, roughness: 0.2 });
+
+    function createLimb(radius, length) {
+        const mesh = new THREE.Mesh(new THREE.CylinderGeometry(radius, radius, length, 16), limbMat);
+        mesh.castShadow = true;
+        return mesh;
+    }
+
+    function createJoint(radius) {
+        return new THREE.Mesh(new THREE.SphereGeometry(radius), jointMat);
+    }
+
+    // Simple structure to hold references
+    const charParts = {
+        head: new THREE.Mesh(new THREE.BoxGeometry(0.25, 0.3, 0.25), limbMat),
+        torso: new THREE.Mesh(new THREE.CylinderGeometry(0.15, 0.1, 0.6), limbMat),
+        leftShoulder: createJoint(0.08),
+        rightShoulder: createJoint(0.08),
+        leftElbow: createJoint(0.07),
+        rightElbow: createJoint(0.07),
+        leftWrist: new THREE.Mesh(new THREE.SphereGeometry(0.12), gloveMat), // Glove
+        rightWrist: new THREE.Mesh(new THREE.SphereGeometry(0.12), gloveMat), // Glove
+        // Connectors
+        leftUpperArm: createLimb(0.05, 1),
+        rightUpperArm: createLimb(0.05, 1),
+        leftLowerArm: createLimb(0.04, 1),
+        rightLowerArm: createLimb(0.04, 1)
+    };
+
+    // Add parts to group
+    Object.values(charParts).forEach(part => playerGroup.add(part));
+
+    // Helper to orient cylinders between two points
+    function placeCylinder(cylinder, point1, point2) {
+        const mid = new THREE.Vector3().addVectors(point1, point2).multiplyScalar(0.5);
+        cylinder.position.copy(mid);
+        cylinder.lookAt(point2);
+        cylinder.rotateX(Math.PI / 2);
+        const dist = point1.distanceTo(point2);
+        cylinder.scale.set(1, dist, 1); // Scale Y to match distance
+    }
+
+    // --- Audio ---
+    const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    function playHitSound() {
+        if (audioCtx.state === 'suspended') audioCtx.resume();
+        const osc = audioCtx.createOscillator();
+        const gain = audioCtx.createGain();
+        osc.type = 'square';
+        osc.frequency.setValueAtTime(150, audioCtx.currentTime);
+        osc.frequency.exponentialRampToValueAtTime(40, audioCtx.currentTime + 0.1);
+        gain.gain.setValueAtTime(0.5, audioCtx.currentTime);
+        gain.gain.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + 0.1);
+        osc.connect(gain);
+        gain.connect(audioCtx.destination);
+        osc.start();
+        osc.stop(audioCtx.currentTime + 0.1);
+    }
+
+    // --- MediaPipe Setup ---
+    const videoElement = document.getElementById('input_video');
+    const canvasElement = document.getElementById('output_canvas');
+    const canvasCtx = canvasElement.getContext('2d');
+
+    function onResults(results) {
+        // 1. Draw Preview
+        canvasCtx.save();
+        canvasCtx.clearRect(0, 0, canvasElement.width, canvasElement.height);
+        canvasCtx.drawImage(results.image, 0, 0, canvasElement.width, canvasElement.height);
+        if (results.poseLandmarks) {
+            drawConnectors(canvasCtx, results.poseLandmarks, POSE_CONNECTIONS, {color: '#00FF00', lineWidth: 2});
+            drawLandmarks(canvasCtx, results.poseLandmarks, {color: '#FF0000', lineWidth: 1, radius: 3});
+        }
+        canvasCtx.restore();
+
+        // 2. Update 3D Character
+        if (results.poseWorldLandmarks) {
+            updateCharacter(results.poseWorldLandmarks);
+        }
+
+        // Hide loading screen on first success
+        document.getElementById('loading').style.display = 'none';
+    }
+
+    const pose = new Pose({locateFile: (file) => {
+        return `https://cdn.jsdelivr.net/npm/@mediapipe/pose/${file}`;
+    }});
+    pose.setOptions({
+        modelComplexity: 1,
+        smoothLandmarks: true,
+        minDetectionConfidence: 0.5,
+        minTrackingConfidence: 0.5
+    });
+    pose.onResults(onResults);
+
+    const cameraUtils = new Camera(videoElement, {
+        onFrame: async () => {
+            await pose.send({image: videoElement});
+        },
+        width: 640,
+        height: 480
+    });
+    cameraUtils.start();
+
+    // --- Game Logic ---
+
+    // Map MediaPipe World Coordinates (Meters, Hip-centered) to Three.js World
+    function mpToThree(lm) {
+        // Sideways Mapping:
+        // User facing Right in camera -> Character facing -Z (Bag)
+        // MP X+ (Right) -> Game Z- (Forward)
+        // MP Y+ (Down)  -> Game Y- (Down)
+        // MP Z  (Depth) -> Game X  (Left/Right)
+        return new THREE.Vector3(-lm.z, -lm.y, -lm.x);
+    }
+
+    function updateCharacter(landmarks) {
+        // Landmarks: 11(L_Shoulder), 12(R_Shoulder), 13(L_Elbow), 14(R_Elbow), 15(L_Wrist), 16(R_Wrist)
+        // 0 (Nose)
+        
+        // Offset to place character in front of camera
+        const offset = new THREE.Vector3(0, 1.0, 0); // Lift up hips
+
+        const nose = mpToThree(landmarks[0]).add(offset);
+        const lShoulder = mpToThree(landmarks[12]).add(offset);
+        const rShoulder = mpToThree(landmarks[11]).add(offset);
+        const lElbow = mpToThree(landmarks[14]).add(offset);
+        const rElbow = mpToThree(landmarks[13]).add(offset);
+        const lWrist = mpToThree(landmarks[16]).add(offset);
+        const rWrist = mpToThree(landmarks[15]).add(offset);
+
+        // Update Mesh Positions
+        charParts.head.position.copy(nose);
+        charParts.leftShoulder.position.copy(lShoulder);
+        charParts.rightShoulder.position.copy(rShoulder);
+        charParts.leftElbow.position.copy(lElbow);
+        charParts.rightElbow.position.copy(rElbow);
+        charParts.leftWrist.position.copy(lWrist);
+        charParts.rightWrist.position.copy(rWrist);
+
+        // Update Connectors
+        placeCylinder(charParts.leftUpperArm, lShoulder, lElbow);
+        placeCylinder(charParts.rightUpperArm, rShoulder, rElbow);
+        placeCylinder(charParts.leftLowerArm, lElbow, lWrist);
+        placeCylinder(charParts.rightLowerArm, rElbow, rWrist);
+
+        // Torso (Simple line between shoulders and hips approx)
+        const midShoulder = new THREE.Vector3().addVectors(lShoulder, rShoulder).multiplyScalar(0.5);
+        charParts.torso.position.copy(midShoulder).add(new THREE.Vector3(0, -0.3, 0));
+
+        // --- Collision Detection ---
+        // Convert local positions to world space for collision check (due to playerGroup rotation)
+        const lWristWorld = lWrist.clone().add(playerGroup.position);
+        const rWristWorld = rWrist.clone().add(playerGroup.position);
+        
+        checkCollision(lWristWorld, 'left');
+        checkCollision(rWristWorld, 'right');
+    }
+
+    function checkCollision(glovePos, hand) {
+        // Get Bag World Position (approximate based on angle)
+        // Bag is at bagGroup position + rotation offset
+        // Simple approximation: The bag is a vertical cylinder.
+        // We calculate the bag's center in world space.
+        
+        // Calculate bag center based on pendulum angles
+        const bagLen = chainLen + bagHeight/2;
+        const bagX = bagGroup.position.x + Math.sin(bagAngleZ) * bagLen;
+        const bagZ = bagGroup.position.z + Math.sin(bagAngleX) * bagLen;
+        const bagY = bagGroup.position.y - Math.cos(bagAngleZ) * Math.cos(bagAngleX) * bagLen;
+        
+        const bagCenter = new THREE.Vector3(bagX, bagY, bagZ);
+        
+        // Distance check
+        const dist = glovePos.distanceTo(bagCenter);
+        const hitThreshold = bagRadius + 0.15; // Bag radius + Glove radius
+
+        if (dist < hitThreshold) {
+            const now = Date.now();
+            if (now - lastHitTime > HIT_COOLDOWN) {
+                // HIT!
+                lastHitTime = now;
+                score += 10;
+                document.getElementById('score-value').innerText = score;
+                playHitSound();
+
+                // Apply Physics Impulse
+                // Direction from glove to bag
+                const forceDir = new THREE.Vector3().subVectors(bagCenter, glovePos).normalize();
+                
+                // Add velocity to pendulum angles
+                // Hitting from front (Z+) pushes bag back (negative angle X)
+                bagVelX -= forceDir.z * 0.1; 
+                bagVelZ -= forceDir.x * 0.1;
+                
+                // Visual flash
+                bag.material.color.setHex(0xffffff);
+                setTimeout(() => bag.material.color.setHex(0xc0392b), 100);
+            }
+        }
+    }
+
+    // --- Animation Loop ---
+    function animate() {
+        requestAnimationFrame(animate);
+
+        // Bag Physics (Damped Pendulum)
+        const gravity = 0.03;
+        const damping = 0.95;
+
+        // Acceleration towards 0
+        const accelX = -gravity * Math.sin(bagAngleX);
+        const accelZ = -gravity * Math.sin(bagAngleZ);
+
+        bagVelX += accelX;
+        bagVelZ += accelZ;
+
+        bagVelX *= damping;
+        bagVelZ *= damping;
+
+        bagAngleX += bagVelX;
+        bagAngleZ += bagVelZ;
+
+        // Apply rotation to bag group
+        bagGroup.rotation.x = bagAngleX;
+        bagGroup.rotation.z = -bagAngleZ; // Invert Z for correct visual swing
+
+        renderer.render(scene, camera);
+    }
+
+    // Handle Resize
+    window.addEventListener('resize', () => {
+        camera.aspect = window.innerWidth / window.innerHeight;
+        camera.updateProjectionMatrix();
+        renderer.setSize(window.innerWidth, window.innerHeight);
+    });
+
+    animate();
+
+</script>
+</body>
+</html>
