@@ -64,6 +64,31 @@
             border-radius: 50%; animation: spin 1s linear infinite; margin-bottom: 20px;
         }
         @keyframes spin { to { transform: rotate(360deg); } }
+
+        /* Customization Panel */
+        #customization-panel {
+            position: absolute; bottom: 20px; right: 20px;
+            background: rgba(0, 0, 0, 0.7); padding: 15px; border-radius: 12px;
+            color: white; text-align: center; pointer-events: auto;
+            border: 1px solid #555;
+        }
+        .color-btn {
+            width: 30px; height: 30px; border-radius: 50%; border: 2px solid #fff;
+            margin: 5px; cursor: pointer; display: inline-block; transition: transform 0.1s;
+        }
+        .color-btn:hover { transform: scale(1.1); }
+        .shape-btn {
+            background: #444; color: #fff; border: 1px solid #fff; border-radius: 4px;
+            padding: 5px 10px; margin: 5px; cursor: pointer; font-family: inherit;
+        }
+        .shape-btn:hover { background: #666; }
+
+        /* About Section */
+        #about-section {
+            position: absolute; bottom: 20px; left: 20px;
+            color: #888; font-size: 14px; font-weight: bold;
+            text-shadow: 1px 1px 0 #000;
+        }
     </style>
     
     <!-- Three.js -->
@@ -97,6 +122,26 @@
         
         <div id="instructions">
             Stand sideways, facing Right, and <b>PUNCH</b> the bag!
+        </div>
+
+        <div id="customization-panel">
+            <div style="margin-bottom: 5px; font-weight: bold; font-size: 14px;">COLOR</div>
+            <div>
+                <div class="color-btn" style="background: #7f8fa6" onclick="setCharColor(0x7f8fa6)"></div>
+                <div class="color-btn" style="background: #e74c3c" onclick="setCharColor(0xe74c3c)"></div>
+                <div class="color-btn" style="background: #2ecc71" onclick="setCharColor(0x2ecc71)"></div>
+                <div class="color-btn" style="background: #f1c40f" onclick="setCharColor(0xf1c40f)"></div>
+            </div>
+            <div style="margin: 10px 0 5px; font-weight: bold; font-size: 14px;">BODY SHAPE</div>
+            <div>
+                <button class="shape-btn" onclick="setBodyShape(0.6)">Slim</button>
+                <button class="shape-btn" onclick="setBodyShape(1.0)">Avg</button>
+                <button class="shape-btn" onclick="setBodyShape(1.5)">Buff</button>
+            </div>
+        </div>
+
+        <div id="about-section">
+            Made by Darshan.S
         </div>
     </div>
 
@@ -177,38 +222,32 @@
     paintingCanvas.position.set(4, 3, -4.39);
     scene.add(paintingCanvas);
 
-    // --- Punching Bag ---
-    const bagGroup = new THREE.Group();
-    scene.add(bagGroup);
-
-    // Pivot point (Ceiling attachment)
+    // --- Punching Bags ---
+    const bagInstances = [];
     const pivotY = 4;
-    const pivotZ = -0.9;
-    bagGroup.position.set(0, pivotY, pivotZ);
-
-    // Chain
     const chainLen = 2.0;
-    const chainGeo = new THREE.CylinderGeometry(0.02, 0.02, chainLen);
-    const chainMat = new THREE.MeshStandardMaterial({ color: 0x2f3542 });
-    const chain = new THREE.Mesh(chainGeo, chainMat);
-    chain.position.y = -chainLen / 2;
-    bagGroup.add(chain);
-
-    // Bag Body
     const bagHeight = 1.2;
     const bagRadius = 0.35;
-    const bagGeo = new THREE.CylinderGeometry(bagRadius, bagRadius, bagHeight, 32);
-    const bagMat = new THREE.MeshStandardMaterial({ color: 0xc0392b, roughness: 0.4 });
-    const bag = new THREE.Mesh(bagGeo, bagMat);
-    bag.position.y = -chainLen - (bagHeight / 2);
-    bag.castShadow = true;
-    bagGroup.add(bag);
 
-    // Bag Physics State
-    let bagAngleX = 0; // Swing forward/back
-    let bagAngleZ = 0; // Swing left/right
-    let bagVelX = 0;
-    let bagVelZ = 0;
+    function createBag(zPos) {
+        const group = new THREE.Group();
+        group.position.set(0, pivotY, zPos);
+        scene.add(group);
+
+        const chain = new THREE.Mesh(new THREE.CylinderGeometry(0.02, 0.02, chainLen), new THREE.MeshStandardMaterial({ color: 0x2f3542 }));
+        chain.position.y = -chainLen / 2;
+        group.add(chain);
+
+        const bag = new THREE.Mesh(new THREE.CylinderGeometry(bagRadius, bagRadius, bagHeight, 32), new THREE.MeshStandardMaterial({ color: 0xc0392b, roughness: 0.4 }));
+        bag.position.y = -chainLen - (bagHeight / 2);
+        bag.castShadow = true;
+        group.add(bag);
+
+        bagInstances.push({ group, mesh: bag, angleX: 0, angleZ: 0, velX: 0, velZ: 0 });
+    }
+
+    createBag(-0.9); // Front bag
+    createBag(0.9);  // Back bag
 
     // --- Player Character (Robot/Mannequin) ---
     const playerGroup = new THREE.Group();
@@ -217,6 +256,22 @@
     const jointMat = new THREE.MeshStandardMaterial({ color: 0x2f3640 });
     const limbMat = new THREE.MeshStandardMaterial({ color: 0x7f8fa6 });
     const gloveMat = new THREE.MeshStandardMaterial({ color: 0xe1b12c, roughness: 0.2 });
+
+    // Customization State
+    let bodyThickness = 1.0;
+
+    window.setCharColor = function(hex) {
+        limbMat.color.setHex(hex);
+    };
+
+    window.setBodyShape = function(scale) {
+        bodyThickness = scale;
+        // Scale static parts (Joints, Head, Torso, Gloves)
+        [charParts.head, charParts.torso, 
+         charParts.leftShoulder, charParts.rightShoulder, 
+         charParts.leftElbow, charParts.rightElbow,
+         charParts.leftWrist, charParts.rightWrist].forEach(p => p.scale.setScalar(scale));
+    };
 
     function createLimb(radius, length) {
         const mesh = new THREE.Mesh(new THREE.CylinderGeometry(radius, radius, length, 16), limbMat);
@@ -255,7 +310,7 @@
         cylinder.lookAt(point2);
         cylinder.rotateX(Math.PI / 2);
         const dist = point1.distanceTo(point2);
-        cylinder.scale.set(1, dist, 1); // Scale Y to match distance
+        cylinder.scale.set(bodyThickness, dist, bodyThickness); // Scale Y to match distance, X/Z for thickness
     }
 
     // --- Audio ---
@@ -376,46 +431,42 @@
     }
 
     function checkCollision(glovePos, hand) {
-        // Get Bag World Position (approximate based on angle)
-        // Bag is at bagGroup position + rotation offset
-        // Simple approximation: The bag is a vertical cylinder.
-        // We calculate the bag's center in world space.
-        
-        // Calculate bag center based on pendulum angles
-        const bagLen = chainLen + bagHeight/2;
-        const bagX = bagGroup.position.x + Math.sin(bagAngleZ) * bagLen;
-        const bagZ = bagGroup.position.z + Math.sin(bagAngleX) * bagLen;
-        const bagY = bagGroup.position.y - Math.cos(bagAngleZ) * Math.cos(bagAngleX) * bagLen;
-        
-        const bagCenter = new THREE.Vector3(bagX, bagY, bagZ);
-        
-        // Distance check
-        const dist = glovePos.distanceTo(bagCenter);
-        const hitThreshold = bagRadius + 0.15; // Bag radius + Glove radius
+        bagInstances.forEach(bagState => {
+            // Calculate bag center based on pendulum angles
+            const bagLen = chainLen + bagHeight/2;
+            const bagX = bagState.group.position.x + Math.sin(bagState.angleZ) * bagLen;
+            const bagZ = bagState.group.position.z + Math.sin(bagState.angleX) * bagLen;
+            const bagY = bagState.group.position.y - Math.cos(bagState.angleZ) * Math.cos(bagState.angleX) * bagLen;
+            
+            const bagCenter = new THREE.Vector3(bagX, bagY, bagZ);
+            
+            // Distance check
+            const dist = glovePos.distanceTo(bagCenter);
+            const hitThreshold = bagRadius + 0.15; // Bag radius + Glove radius
 
-        if (dist < hitThreshold) {
-            const now = Date.now();
-            if (now - lastHitTime > HIT_COOLDOWN) {
-                // HIT!
-                lastHitTime = now;
-                score += 10;
-                document.getElementById('score-value').innerText = score;
-                playHitSound();
+            if (dist < hitThreshold) {
+                const now = Date.now();
+                if (now - lastHitTime > HIT_COOLDOWN) {
+                    // HIT!
+                    lastHitTime = now;
+                    score += 10;
+                    document.getElementById('score-value').innerText = score;
+                    playHitSound();
 
-                // Apply Physics Impulse
-                // Direction from glove to bag
-                const forceDir = new THREE.Vector3().subVectors(bagCenter, glovePos).normalize();
-                
-                // Add velocity to pendulum angles
-                // Hitting from front (Z+) pushes bag back (negative angle X)
-                bagVelX -= forceDir.z * 0.1; 
-                bagVelZ -= forceDir.x * 0.1;
-                
-                // Visual flash
-                bag.material.color.setHex(0xffffff);
-                setTimeout(() => bag.material.color.setHex(0xc0392b), 100);
+                    // Apply Physics Impulse
+                    // Direction from glove to bag
+                    const forceDir = new THREE.Vector3().subVectors(bagCenter, glovePos).normalize();
+                    
+                    // Add velocity to pendulum angles
+                    bagState.velX -= forceDir.z * 0.1; 
+                    bagState.velZ -= forceDir.x * 0.1;
+                    
+                    // Visual flash
+                    bagState.mesh.material.color.setHex(0xffffff);
+                    setTimeout(() => bagState.mesh.material.color.setHex(0xc0392b), 100);
+                }
             }
-        }
+        });
     }
 
     // --- Animation Loop ---
@@ -426,22 +477,24 @@
         const gravity = 0.03;
         const damping = 0.95;
 
-        // Acceleration towards 0
-        const accelX = -gravity * Math.sin(bagAngleX);
-        const accelZ = -gravity * Math.sin(bagAngleZ);
+        bagInstances.forEach(bagState => {
+            // Acceleration towards 0
+            const accelX = -gravity * Math.sin(bagState.angleX);
+            const accelZ = -gravity * Math.sin(bagState.angleZ);
 
-        bagVelX += accelX;
-        bagVelZ += accelZ;
+            bagState.velX += accelX;
+            bagState.velZ += accelZ;
 
-        bagVelX *= damping;
-        bagVelZ *= damping;
+            bagState.velX *= damping;
+            bagState.velZ *= damping;
 
-        bagAngleX += bagVelX;
-        bagAngleZ += bagVelZ;
+            bagState.angleX += bagState.velX;
+            bagState.angleZ += bagState.velZ;
 
-        // Apply rotation to bag group
-        bagGroup.rotation.x = bagAngleX;
-        bagGroup.rotation.z = -bagAngleZ; // Invert Z for correct visual swing
+            // Apply rotation to bag group
+            bagState.group.rotation.x = bagState.angleX;
+            bagState.group.rotation.z = -bagState.angleZ; // Invert Z for correct visual swing
+        });
 
         renderer.render(scene, camera);
     }
